@@ -1,0 +1,356 @@
+---
+title: "Summary Graphs"
+output:
+  html_document: default
+---
+
+```{r}
+library(broom)
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ez)
+```
+
+
+Starting data
+```{r}
+subject_demographic_data <- read.csv("dataOct20_2018.csv")
+subject_data <- read.csv("fall18_oddballCP.csv") 
+
+#This person was missing some of the trials
+subject_data <- subject_data %>% filter(subject_id != "5b7a902e16aa440001697f84")
+```
+
+Different phases of the experiment
+```{r}
+phase1 <- subject_data %>% filter(test_part == "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+test <- subject_data %>% filter(test_part != "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+odd_ball <- subject_data %>% filter(test_part == "ob_test") %>% mutate(pair = case_when(
+  pair_type == "be" ~ "be",
+  pair_type == "wi1" ~ "wi",
+  pair_type == "wi2" ~ "wi",
+  pair_type == "irr1" ~ "irr",
+  pair_type == "irr2" ~ "irr",
+  pair_type == "irr3" ~ "irr"
+)) %>% mutate(is_rel = ifelse(pair=="irr", FALSE, TRUE))  %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+number_judge <- subject_data %>% filter(test_part == "nj_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+category_judge <- subject_data %>% filter(test_part == "ct_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+```
+
+Standardized Oddball
+```{r}
+standardized_oddball <- odd_ball %>%
+  group_by(subject_id, pair_type, pair) %>%
+  mutate(top = distance == .33) %>%
+  mutate(next_change = if_else(correct == 1, -1, 1)) %>% 
+  mutate(next_change = if_else(next_change == 1 & top, 0, next_change)) %>% 
+  mutate(dist_change = cumsum(next_change))
+```
+
+Fitting individual Models
+```{r}
+subject.model <- function(df){
+  return(glm(correct ~ trial_number, data=df, family=binomial))
+}
+
+add.predictions.glm <- function(df){
+  return(augment(df, type.predict = "response"))
+}
+
+category_learn_summary <- category_judge %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+
+number_learn_summary <- number_judge %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+  
+
+oddball_perf_summary <- standardized_oddball %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id, assigned_Condition, pair, rel_dim) %>% summarise(dist_change = mean(dist_change)) %>% select(subject_id, dist_change, assigned_Condition, pair, rel_dim)
+
+cat_odd_performance_comp <- merge(category_learn_summary, oddball_perf_summary %>% filter(assigned_Condition == "experimental"), by="subject_id")
+
+num_odd_performance_comp <- merge(number_learn_summary, oddball_perf_summary %>% filter(assigned_Condition == "control"), by="subject_id")
+```
+
+Graph comparing estimate of category learning to estimate of oddball performance
+```{r}
+pdf("CatvsOddBall.pdf")
+catvsoddball <- cat_odd_performance_comp %>% ggplot((aes(x=pred, y=dist_change, group=pair, color=pair))) + 
+  geom_point() + 
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Category Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") +
+  ggtitle("Oddball Task vs Category Learning")
+print(catvsoddball)
+dev.off()
+catvsoddball
+```
+
+```{r}
+pdf("CatvsOddBall.pdf")
+numvsoddball <- num_odd_performance_comp %>% ggplot((aes(x=pred, y=dist_change, group=pair, color=pair))) + 
+  geom_point() + 
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Number Judgement Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") +
+  ggtitle("Oddball Task vs Number Judgement Learning")
+print(catvsoddball)
+dev.off()
+numvsoddball
+```
+
+Both put together
+```{r}
+all_perf_oddball <- rbind(cat_odd_performance_comp, num_odd_performance_comp)
+```
+
+```{r}
+pdf("CatandNumvsOddBall.pdf", width=10, height=6)
+all_vs_oddball <- all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+print(all_vs_oddball)
+dev.off()
+all_vs_oddball
+
+pdf("CatandNumvsOddBallFacetByCondition.pdf", width=10, height=6)
+all_vs_oddball_condition <- all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+print(all_vs_oddball_condition)
+dev.off()
+all_vs_oddball_condition
+```
+
+```{r}
+pdf("CatandNumvsOddBallBrokenByDimension.pdf", width=10, height=6)
+all_vs_oddball_by_dim <- all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(rel_dim~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+print(all_vs_oddball_by_dim)
+dev.off()
+all_vs_oddball_by_dim
+```
+
+
+How did people do in each pair type generally?
+```{r}
+all_perf_oddball %>% ggplot((aes(x=pred))) + 
+  geom_histogram(bins=50) + 
+  facet_grid(assigned_Condition~pair )
+```
+
+Everyone at once
+```{r}
+mean_rt <- mean(as.numeric(as.character((odd_ball %>% filter(correct == 1))$rt)))
+sd_rt <- sd(as.numeric(as.character((odd_ball %>% filter(correct == 1))$rt)))
+odd_ball %>% filter(correct == 1) %>% ggplot(aes(x=as.numeric(as.character(rt)))) + geom_histogram(binwidth = 100) + geom_vline(xintercept =mean_rt, color="red") + geom_vline(xintercept =mean_rt+sd_rt) + geom_vline(xintercept =mean_rt-sd_rt)
+```
+
+```{r}
+subject_rt <- odd_ball %>% filter(correct == 1) %>% summarise(mean = mean(as.numeric(as.character(rt))), sd=sd(as.numeric(as.character(rt))))
+
+fast_oddball <- subject_rt %>% filter (mean < 1000)
+fast_oddball
+
+num_fast_oddball <- odd_ball %>% filter(correct == 1) %>% filter(as.numeric(as.character(rt)) < 1000) %>% group_by(subject_id) %>% count()
+num_fast_oddball
+```
+
+Include less points in the category learning
+```{r}
+category_learn_summary_end <- category_judge %>% filter(block %in% c("30", "31", "32", "33", "34", "35", "36", "37", "38", "39", "40")) %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+
+number_judge$block<-as.numeric(as.character(number_judge$block))
+number_judge$correct<-as.numeric(as.character(number_judge$correct))
+
+number_learn_summary_end <- number_judge  %>% 
+  filter(block >= 30) %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+
+cat_odd_performance_comp_end <- merge(category_learn_summary_end, oddball_perf_summary %>% filter(assigned_Condition == "experimental"), by="subject_id")
+
+num_odd_performance_comp_end <- merge(number_learn_summary_end, oddball_perf_summary %>% filter(assigned_Condition == "control"), by="subject_id")
+
+all_perf_oddball_end <- rbind(cat_odd_performance_comp_end, num_odd_performance_comp_end)
+
+all_perf_oddball_end %>% ggplot((aes(x=pred, y=dist_change, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(rel_dim~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+```
+
+```{r}
+num_fast_oddball %>% ggplot(aes(x=n)) + geom_histogram(binwidth = 5)
+```
+
+Making typical graph depicting bet vs with for control vs experimental using last trial
+```{r}
+# Remove poor performers (80% correct out of last 7 blocks), first do individual, then keep 4 blocks (then can do standard SE)
+part_poor_perfs <- category_judge %>% filter(as.numeric(as.character(block)) > 33) %>% group_by(subject_id) %>% summarize(prop_correct =mean(as.numeric(as.character(correct)))) %>% filter(prop_correct > .8)
+
+end_perf <- odd_ball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(pair != "irr", as.numeric(as.character(block)) > 36) %>% group_by(subject_id, pair, assigned_Condition) %>% summarize(prop_correct =mean(as.numeric(as.character(correct))))
+
+end_perf_sum <- end_perf %>% group_by(pair, assigned_Condition) %>% summarise(average_correct = mean(prop_correct), n = n(), sd=sd(prop_correct), SE=sd/sqrt(n))
+
+end_perf_sum %>% ggplot((aes(x=pair, y=average_correct, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=average_correct-SE, ymax=average_correct+SE), width=.1)
+```
+
+Making typical graph depicting rel vs irr for control vs experimental using last trial
+```{r}
+end_perf_rel_irr <- odd_ball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(as.numeric(as.character(block)) > 33) %>% group_by(subject_id, is_rel, assigned_Condition) %>% summarize(prop_correct =mean(as.numeric(as.character(correct))))
+
+end_perf_rel_irr_sum <- end_perf_rel_irr %>% group_by(is_rel, assigned_Condition) %>% summarise(average_correct = mean(prop_correct), n = n(), sd=sd(prop_correct), SE=sd/sqrt(n))
+
+end_perf_rel_irr_sum %>% ggplot((aes(x=is_rel, y=average_correct, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=average_correct-SE, ymax=average_correct+SE), width=.1) + 
+  scale_x_discrete(labels = c("Irrelevant", "Relevant"))
+```
+
+RM Anova for Between vs Within and Relevant vs Irrelevant
+```{r}
+bet_with_anova <- ezANOVA(data=end_perf, wid=subject_id, dv=prop_correct, within = pair, between = assigned_Condition)
+bet_with_anova
+
+rel_irr_anova <- ezANOVA(data=end_perf_rel_irr, wid=subject_id, dv=prop_correct, within = is_rel, between = assigned_Condition)
+rel_irr_anova
+```
+
+Make the above graphes but do it separately for each dimension
+```{r}
+end_perf_dim <- odd_ball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(pair != "irr", as.numeric(as.character(block)) > 36) %>% group_by(subject_id, pair, assigned_Condition, rel_dim) %>% summarize(prop_correct =mean(as.numeric(as.character(correct))))
+
+end_perf_sum_dim <- end_perf_dim %>% group_by(pair, assigned_Condition, rel_dim) %>% summarise(average_correct = mean(prop_correct), n = n(), sd=sd(prop_correct), SE=sd/sqrt(n))
+
+end_perf_sum_dim %>% ggplot((aes(x=pair, y=average_correct, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=average_correct-SE, ymax=average_correct+SE), width=.1) + facet_grid(.~rel_dim)
+```
+
+```{r}
+end_perf_rel_irr_dim <- odd_ball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(as.numeric(as.character(block)) > 33) %>% group_by(subject_id, is_rel, assigned_Condition, rel_dim) %>% summarize(prop_correct =mean(as.numeric(as.character(correct))))
+
+end_perf_rel_irr_sum_dim <- end_perf_rel_irr_dim %>% group_by(is_rel, assigned_Condition, rel_dim) %>% summarise(average_correct = mean(prop_correct), n = n(), sd=sd(prop_correct), SE=sd/sqrt(n))
+
+end_perf_rel_irr_sum_dim %>% ggplot((aes(x=is_rel, y=average_correct, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=average_correct-SE, ymax=average_correct+SE), width=.1) + 
+  scale_x_discrete(labels = c("Irrelevant", "Relevant")) + facet_grid(.~rel_dim)
+```
+
+Boxplots 
+```{r}
+mean_ind_learning <- all_perf_oddball %>% group_by(assigned_Condition, rel_dim) %>% summarize(mean=mean(pred))
+mean_ind_learning
+
+#pdf("HistogramIndLearningByDim.pdf", width=10, height=6)
+histogram_ind_learning <- all_perf_oddball %>% ggplot(aes(x=pred)) + geom_histogram(binwidth = .1) + facet_grid(.~assigned_Condition+rel_dim) + xlab("Estimate of Individual Learning by Final Trial") + geom_vline(aes(xintercept=mean), data=mean_ind_learning, color="red")
+#print(histogram_ind_learning)
+#dev.off()
+histogram_ind_learning
+```
+
+Try analyses again without super fast homies
+graph of fast homies
+New clean R file
+
+Look at response time for correct answers
+```{r}
+# Creating the new summary
+oddball_perf_summary3 <- standardized_oddball %>% filter(correct == 1) %>% group_by(subject_id, pair, assigned_Condition) %>% summarise(av_response_time = mean(as.numeric(as.character(rt))))
+
+all_perf_oddball3 <- merge(oddball_perf_summary3, rbind(category_learn_summary,number_learn_summary), by="subject_id")
+```
+
+```{r}
+#pdf("CatandNumvsOddBallUsingRT.pdf", width=10, height=6)
+all_vs_oddball3 <-all_perf_oddball3 %>% ggplot((aes(x=pred, y=av_response_time, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Perf by Average RT for Correct Trials") 
+#print(all_vs_oddball3)
+#dev.off()
+all_vs_oddball3
+
+#pdf("CatandNumvsOddBallUsingRTFacetByAssignedCondition.pdf", width=10, height=6)
+control_exp <- all_perf_oddball3 %>% ggplot((aes(x=pred, y=av_response_time, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Perf by Average RT for Correct Trials") 
+#print(control_exp)
+#dev.off()
+control_exp
+```
+
+```{r}
+all_perf_oddball3 %>% filter(av_response_time > 1000) %>% ggplot((aes(x=pred, y=av_response_time, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Perf by Average RT for Correct Trials")
+```
+
+
+```{r}
+all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", formula = y ~ x + I(x*(x <= .7)), se=F) +
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+```
+
+```{r}
+all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+```
+

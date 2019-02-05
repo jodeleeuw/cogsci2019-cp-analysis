@@ -1,0 +1,320 @@
+---
+title: "Exploratory Analysis"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+```{r message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(nlme)
+```
+
+Starting data
+```{r}
+subject_demographic_data <- read.csv("dataOct20_2018.csv")
+subject_data <- read.csv("fall18_oddballCP.csv") 
+
+#This person was missing some of the trials
+subject_data <- subject_data %>% filter(subject_id != "5b7a902e16aa440001697f84")
+```
+
+Different phases of the experiment
+```{r}
+phase1 <- subject_data %>% filter(test_part == "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+test <- subject_data %>% filter(test_part != "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+odd_ball <- subject_data %>% filter(test_part == "ob_test") %>% mutate(pair = case_when(
+  pair_type == "be" ~ "be",
+  pair_type == "wi1" ~ "wi",
+  pair_type == "wi2" ~ "wi",
+  pair_type == "irr1" ~ "irr",
+  pair_type == "irr2" ~ "irr",
+  pair_type == "irr3" ~ "irr"
+)) %>% mutate(is_rel = ifelse(pair=="irr", FALSE, TRUE))  %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+number_judge <- subject_data %>% filter(test_part == "nj_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+category_judge <- subject_data %>% filter(test_part == "ct_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+```
+
+Just performance in phase one
+```{r}
+averaged_distance_trial <- phase1 %>% group_by(trial_number, rel_dim) %>% summarise(distance = mean(as.numeric(as.character(distance)))) %>% mutate(subject_id="average")
+
+phase1 %>% ggplot(aes(x=trial_number, y=as.numeric(as.character(distance)), group=subject_id)) + 
+  geom_line(color="steelblue") + 
+  facet_grid(rel_dim ~ .) + scale_y_continuous(name="Distance") +
+  xlab("Trial Number") + geom_line(data=averaged_distance_trial)
+```
+
+```{r}
+reversals_sum <- phase1 %>% group_by(rel_dim) %>% summarize(mean_trials_to_8 = mean(trial_number), sd = sd(trial_number))
+reversals_sum
+```
+
+```{r}
+# See what the average distance is for the last trial (not done)
+```
+
+
+Performance in phase 2
+```{r}
+# Oddball task by trial
+averaged_distance_oddball <- odd_ball %>% group_by(trial_number, pair_type, assigned_Condition) %>% summarise(distance = mean(as.numeric(as.character(distance)))) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+odd_ball %>% group_by(subject_id, pair_type, assigned_Condition) %>% ggplot(aes(x=trial_number, y=as.numeric(as.character(distance)), group=subject_id, color=assigned_Condition)) + 
+  geom_line(color="steelblue") + facet_grid(pair_type ~ .) + 
+  scale_y_continuous(name="Distance", limits=c(0, .4)) + 
+  geom_line(data=averaged_distance_oddball)
+```
+
+```{r}
+#Oddball task distance by trial, collapse over pair types
+averaged_distance_pair_oddball <- odd_ball %>% group_by(trial_number, pair, assigned_Condition) %>% summarise(distance = mean(as.numeric(as.character(distance)))) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+odd_ball %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=trial_number, y=as.numeric(as.character(distance)), group=subject_id, color=assigned_Condition)) + 
+  geom_line(color="steelblue") + facet_grid(pair ~ .) + 
+  scale_y_continuous(name="Distance", limits=c(0, .35)) + 
+  geom_line(data=averaged_distance_pair_oddball)
+```
+
+
+```{r}
+standardized_oddball <- odd_ball %>%
+  group_by(subject_id, pair_type, pair, is_rel) %>%
+  mutate(top = distance == .33) %>%
+  mutate(next_change = if_else(correct == 1, -1, 1)) %>% 
+  mutate(next_change = if_else(next_change == 1 & top, 0, next_change)) %>% 
+  mutate(dist_change = cumsum(next_change))
+```
+
+```{r}
+# Standardized distance change in steps by trial
+stand_averaged_distance_oddball <- standardized_oddball %>% group_by(trial_number, pair_type, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+standardized_oddball %>% group_by(subject_id, pair_type, assigned_Condition) %>% ggplot(aes(x=trial_number, y=dist_change, group=subject_id, color=assigned_Condition)) + 
+  geom_line(color="steelblue") + facet_grid(pair_type ~ .) + 
+  geom_line(data=stand_averaged_distance_oddball)
+```
+
+```{r}
+# Standardized distance change in steps, collasped over pair type, by trial
+stand_averaged_distance_pair_oddball <- standardized_oddball %>% group_by(trial_number, pair, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+standardized_oddball %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=trial_number, y=dist_change, group=subject_id, color=assigned_Condition)) + 
+  geom_line(color="steelblue") + facet_grid(pair ~ .) + 
+  geom_line(data=stand_averaged_distance_pair_oddball)
+```
+
+```{r}
+#Standardized distance in steps, by block
+stand_averaged_distance_oddball <- standardized_oddball %>% group_by(block, pair_type, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_dist <- standardized_oddball %>% group_by(subject_id, assigned_Condition, pair_type, block) %>% summarize(dist_change = mean(dist_change)) 
+
+block_stand_dist %>% group_by(subject_id, pair_type, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id, color=assigned_Condition)) +
+  geom_line(color="steelblue") + facet_grid(pair_type ~ .) + 
+  geom_line(data=stand_averaged_distance_oddball)
+```
+
+```{r}
+#Standardized distance in steps, by block collasped over pair type
+stand_averaged_distance_pair_oddball <- standardized_oddball %>% group_by(block, pair, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_pair_dist <- standardized_oddball %>% group_by(subject_id, assigned_Condition, pair, block) %>% summarize(dist_change = mean(dist_change)) 
+
+block_stand_pair_dist %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id, color=assigned_Condition)) +
+  geom_line(color="steelblue") + facet_grid(pair ~ .) + 
+  geom_line(data=stand_averaged_distance_pair_oddball)
+```
+
+Number judgement
+```{r}
+number_judge_average <- number_judge %>% group_by(block, pair_type) %>% summarise(prop_correct = mean(as.numeric(as.character(correct)))) %>% mutate(subject_id= "control")
+
+number_judge_block <- number_judge %>% group_by(subject_id, pair_type, block) %>% summarise(prop_correct = mean(as.numeric(as.character(correct)))) 
+
+number_judge_block %>% group_by(subject_id, pair_type) %>% ggplot(aes(x=as.numeric(as.character(block)), y=prop_correct, group=subject_id)) +
+  geom_line(color="steelblue") + facet_grid(pair_type ~ .) + 
+  geom_line(data=number_judge_average)
+```
+Category Judgement
+```{r}
+category_judge_average <- category_judge %>% group_by(block, pair_type) %>% summarise(prop_correct = mean(as.numeric(as.character(correct)))) %>% mutate(subject_id= "experimental")
+
+category_judge_block <- category_judge %>% group_by(subject_id, pair_type, block) %>% summarise(prop_correct = mean(as.numeric(as.character(correct)))) 
+
+category_judge_block %>% group_by(subject_id, pair_type) %>% ggplot(aes(x=as.numeric(as.character(block)), y=prop_correct, group=subject_id)) +
+  geom_line(color="steelblue") + facet_grid(pair_type ~ .) + 
+  geom_line(data=category_judge_average)
+```
+
+Just to explore, remove some of the worst participants (look at performance in final quarter)
+```{r}
+poor_number_judge <- number_judge %>% filter(as.numeric(as.character(block)) > 30) %>% group_by(subject_id) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .50) %>% select(subject_id)
+
+poor_category_judge <- category_judge %>% filter(as.numeric(as.character(block)) >= 30) %>% group_by(subject_id) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .50) %>% select(subject_id)
+
+poor_oddball <- standardized_oddball %>% filter(as.numeric(as.character(block)) > 30) %>% group_by(subject_id) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .50) %>% select(subject_id)
+
+poor_oddball_overall_blocks <- standardized_oddball %>% filter(subject_id %in% poor_oddball$subject_id) %>% group_by(subject_id, block) %>% summarize(prop_correct = mean(as.numeric(as.character(correct))))
+```
+
+
+Worst guys over block
+```{r}
+poor_oddball_overall_blocks %>% ggplot(aes(x=as.numeric(as.character(block)), y= prop_correct, group=subject_id)) + geom_line()
+```
+
+
+Graph the oddball task again this time without worst guys
+```{r}
+stand_averaged_distance_oddball <-  standardized_oddball %>% filter(!(subject_id %in% poor_number_judge) && !(subject_id %in% poor_category_judge)) %>% group_by(block, pair_type, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_dist <- standardized_oddball %>% filter(!(subject_id %in% poor_number_judge$subject_id) && !(subject_id %in% poor_category_judge$subject_id)) %>% group_by(subject_id, assigned_Condition, pair_type, block) %>% summarize(dist_change = mean(dist_change)) 
+
+#pdf("DistanceChangeByBlockSepPairs.pdf")
+distanceChangePairsSep <- block_stand_dist %>% group_by(subject_id, pair_type, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id, color=assigned_Condition)) +
+  scale_colour_manual(name="Legend", values=c("blue","darkorchid4","turquoise1", "pink1")) +
+  geom_line() + facet_grid(. ~ pair_type) + 
+  geom_line(data=stand_averaged_distance_oddball, aes(color=subject_id))
+#print(distanceChangePairsSep)
+#dev.off()
+distanceChangePairsSep
+```
+
+
+```{r}
+# Graph the pair types again without worst guys (for the oddball task)
+stand_averaged_distance_pair_oddball_2 <- standardized_oddball %>% filter(!(subject_id %in% poor_oddball$subject_id)) %>% group_by(block, pair, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_pair_dist_2 <- standardized_oddball %>% filter(!(subject_id %in% poor_oddball$subject_id)) %>% group_by(subject_id, assigned_Condition, pair, block) %>% summarize(dist_change = mean(dist_change)) 
+
+#pdf("DistanceChangeByBlockRemovWorstOddball.pdf")
+distanceChangeBlock2 <- block_stand_pair_dist_2 %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id)) +
+  scale_colour_manual(name="Legend", values=c("blue","darkorchid4","turquoise1", "pink1")) +
+  geom_line(aes(color=assigned_Condition)) + facet_grid(pair ~ .) + 
+  geom_line(data=stand_averaged_distance_pair_oddball_2, aes(color=subject_id)) + xlab("Block") + ylab("Standardized Distance Change")
+#print(distanceChangeBlock2)
+#dev.off()
+distanceChangeBlock2
+```
+
+```{r}
+# Graph the pair types again without worst guys
+stand_averaged_distance_pair_oddball <-  standardized_oddball %>% filter(!(subject_id %in% poor_number_judge) && !(subject_id %in% poor_category_judge)) %>% group_by(block, pair, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_pair_dist <- standardized_oddball %>% filter(!(subject_id %in% poor_number_judge$subject_id) && !(subject_id %in% poor_category_judge$subject_id)) %>% group_by(subject_id, assigned_Condition, pair, block) %>% summarize(dist_change = mean(dist_change)) 
+
+#pdf("DistanceChangeByBlock.pdf")
+distanceChangeBlock <- block_stand_pair_dist %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id)) +
+  scale_colour_manual(name="Legend", values=c("blue","darkorchid4","turquoise1", "pink1")) +
+  geom_line(aes(color=assigned_Condition)) + facet_grid(. ~ pair) + 
+  geom_line(data=stand_averaged_distance_pair_oddball, aes(color=subject_id)) + xlab("Block") + ylab("Standardized Distance Change")
+#print(distanceChangeBlock)
+#dev.off()
+distanceChangeBlock
+```
+
+Creating groups based on levels of performance in task. Can change the thresholds
+```{r}
+number_judge_performance <- number_judge %>% group_by(subject_id, assigned_Condition) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% mutate(task_perf = case_when(
+  # organized by quartile, first being border for lowest and third for the border of medium group
+  prop_correct < .70 ~ "low", 
+  prop_correct < .90 ~ "med",
+  TRUE ~ "high"
+)) %>% select(subject_id, task_perf)
+
+category_judge_performance <- category_judge %>% group_by(subject_id, assigned_Condition) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% mutate(task_perf = case_when(
+  # organized by quartile, first being border for lowest and third for the border of medium group
+  prop_correct < .56 ~ "low",
+  prop_correct < .79 ~ "med",
+  TRUE ~ "high"
+)) %>% select(subject_id, task_perf)
+
+#Create single table of performance
+task_performance <- rbind(number_judge_performance, category_judge_performance)
+```
+
+```{r}
+standardized_oddball <- merge(standardized_oddball, task_performance, by="subject_id")
+```
+
+```{r}
+# Graph each performance level
+stand_averaged_distance_performance_oddball <- standardized_oddball %>% group_by(block, pair, assigned_Condition, task_perf) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id=paste(assigned_Condition, task_perf))
+
+#pdf("DistanceChangeSepByTaskPerformance.pdf", width=10, height=6)
+distanceChangeBlockByTaskPerformance <- stand_averaged_distance_performance_oddball %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id, color=assigned_Condition)) +
+  scale_colour_manual(name="Experimental Condition", values=c("blue","green")) +
+  geom_line() + facet_grid(task_perf ~ pair) + xlab("Block") + ylab("Standardized Distance Change")
+#print(distanceChangeBlockByTaskPerformance)
+#dev.off()
+distanceChangeBlockByTaskPerformance
+#table(stand_averaged_distance_performance_oddball$task_perf)
+```
+
+How to evaluate graphically is there a relationship between doing better on the single task and the category task
+
+Create dfs for proportion correct per pair type per block and compare to proportion correct per other task per block
+```{r}
+# Looking at just performance on this block, irrespective of where you start
+subject_oddball_block_perf <- standardized_oddball %>% group_by(block, subject_id, pair, assigned_Condition) %>% summarise(av_distance = mean(next_change))
+
+subject_category_block_perf <- category_judge %>% group_by(subject_id, block, assigned_Condition) %>% summarize(prop_correct = mean(as.numeric(as.character(correct))))
+subject_number_block_perf <- number_judge %>% group_by(subject_id, block, assigned_Condition) %>% summarize(prop_correct = mean(as.numeric(as.character(correct))))
+
+subject_task_block_perf <- rbind(subject_category_block_perf, subject_number_block_perf)
+
+block_pair <- left_join(subject_oddball_block_perf, subject_task_block_perf, by=c("subject_id", "block", "assigned_Condition"))
+```
+
+Graph looking at if there is a relationship between doing well in the block on the cat/num judgement task and then doing well on the oddball task
+```{r}
+block_pair %>% group_by(subject_id, pair) %>% ggplot(aes(x=prop_correct, y=av_distance, group=assigned_Condition)) + facet_grid(pair ~ .) + geom_point() + geom_smooth(method='lm', aes(color=assigned_Condition))
+# One subject only had 5 trials for blocks 38, 35
+# missing 36 37: 5b7a902e16aa440001697f84
+
+# Further investigation revealed that this person is the only who had this problem
+```
+
+Graph relevant vs irrelevant
+```{r}
+# Graph the pair types again without worst guys
+stand_averaged_distance_rel_oddball <-  standardized_oddball %>% filter(!(subject_id %in% poor_number_judge) && !(subject_id %in% poor_category_judge)) %>% group_by(block, is_rel, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_rel_dist <- standardized_oddball %>% filter(!(subject_id %in% poor_number_judge$subject_id) && !(subject_id %in% poor_category_judge$subject_id)) %>% group_by(subject_id, assigned_Condition, is_rel, block) %>% summarize(dist_change = mean(dist_change)) 
+
+#pdf("DistanceChangeByBlockRel.pdf")
+distanceChangeBlockRel <- block_stand_rel_dist %>% group_by(subject_id, is_rel, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id)) +
+  scale_colour_manual(name="Legend", values=c("blue","darkorchid4","turquoise1", "pink1")) +
+  geom_line(aes(color=assigned_Condition)) + facet_grid(. ~ is_rel) + 
+  geom_line(data=stand_averaged_distance_rel_oddball, aes(color=subject_id)) + xlab("Block") + ylab("Standardized Distance Change")
+#print(distanceChangeBlock)
+#dev.off()
+distanceChangeBlockRel
+```
+
+Exclusion Criteria:
+-people who did not exceed 50% accuracy in the final quarter
+-people whose overall accuracy did not exceed some threshold
+-keep everyone and organize into group based on performance
+  - organize into groups by quartile
+  - organize into low and high
+- keep everyone but use performance on other task as something that factors into the model
+
+
+Different analysis ideas:
+- linear reg hierachical model to predict distance change using assigned condition and pair
+    - use block
+    - use trial number
+    _ + add level of performance on other task (groups)
+- evaluate just final distance change between groups (this is what we would normally do)
+
+
+Potential model (ignoring cat performance)
+```{r include=FALSE}
+condition_model <- lme(dist_change ~ trial_number + assigned_Condition + pair+ pair*assigned_Condition, data=standardized_oddball, random=~trial_number|subject_id,  method="ML")
+summary(condition_model)
+```
+
+

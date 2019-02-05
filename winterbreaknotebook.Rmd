@@ -1,0 +1,184 @@
+---
+title: "R Notebook"
+output:
+  html_document: default
+---
+
+```{r}
+library(broom)
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ez)
+```
+
+Starting data
+```{r}
+subject_demographic_data <- read.csv("dataOct20_2018.csv")
+subject_data <- read.csv("fall18_oddballCP.csv") 
+
+#This person was missing some of the trials
+subject_data <- subject_data %>% filter(subject_id != "5b7a902e16aa440001697f84")
+```
+
+Different phases of the experiment
+```{r}
+phase1 <- subject_data %>% filter(test_part == "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+test <- subject_data %>% filter(test_part != "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+odd_ball <- subject_data %>% filter(test_part == "ob_test") %>% mutate(pair = case_when(
+  pair_type == "be" ~ "be",
+  pair_type == "wi1" ~ "wi",
+  pair_type == "wi2" ~ "wi",
+  pair_type == "irr1" ~ "irr",
+  pair_type == "irr2" ~ "irr",
+  pair_type == "irr3" ~ "irr"
+)) %>% mutate(is_rel = ifelse(pair=="irr", FALSE, TRUE))  %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+number_judge <- subject_data %>% filter(test_part == "nj_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+category_judge <- subject_data %>% filter(test_part == "ct_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+```
+
+Standardized Oddball
+```{r}
+standardized_oddball <- odd_ball %>%
+  group_by(subject_id, pair_type, pair) %>%
+  mutate(top = distance == .33) %>%
+  mutate(next_change = if_else(correct == 1, -1, 1)) %>% 
+  mutate(next_change = if_else(next_change == 1 & top, 0, next_change)) %>% 
+  mutate(dist_change = cumsum(next_change))
+```
+
+Calculating Oddball Performance Measure
+Fitting individual Models
+```{r}
+subject.model <- function(df){
+  return(glm(correct ~ trial_number, data=df, family=binomial))
+}
+
+add.predictions.glm <- function(df){
+  return(augment(df, type.predict = "response"))
+}
+
+category_learn_summary <- category_judge %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+
+number_learn_summary <- number_judge %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+
+```
+
+Calculate response time for each participant for each pair type
+```{r}
+oddball_perf_overall_sum <- standardized_oddball %>% filter(correct == 1) %>% group_by(subject_id) %>% summarise(overall_av_rt = mean(as.numeric(as.character(rt))))
+
+#oddball_perf_summary3 <- standardized_oddball %>% filter(correct == 1) %>% group_by(subject_id, pair, assigned_Condition) %>% summarise(av_response_time = mean(as.numeric(as.character(rt))))
+
+oddball_perf_summary3 <- merge(standardized_oddball %>% filter(correct == 1) , oddball_perf_overall_sum, by="subject_id")
+
+oddball_perf_summary3 <- oddball_perf_summary3 %>% mutate(stand_rt = as.numeric(as.character(rt)) - overall_av_rt)
+
+oddball_perf_summary3 <- oddball_perf_summary3 %>% group_by(subject_id, pair, assigned_Condition) %>% summarise(av_response_time = mean(stand_rt))
+
+all_perf_oddball3_stand <- merge(oddball_perf_summary3, rbind(number_learn_summary, category_learn_summary), by="subject_id")
+```
+
+Graph new standardized response times
+```{r}
+all_perf_oddball3_stand %>% ggplot((aes(x=pred, y=av_response_time, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Est. of Oddball Perf by Standardized Average RT for Correct Trials") 
+
+#pdf("CatandNumvsOddBallUsingStandRTFacetByAssignedCondition.pdf", width=10, height=6)
+stand_control_exp <- all_perf_oddball3_stand %>% ggplot((aes(x=pred, y=av_response_time, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Est. of Oddball Perf by Standardized Average RT for Correct Trials")
+#print(stand_control_exp)
+#dev.off()
+stand_control_exp
+```
+
+```{r}
+# Remove poor performers (less than 80% correct out of last 7 blocks)
+part_poor_perfs <- category_judge %>% filter(as.numeric(as.character(block)) > 33) %>% group_by(subject_id) %>% summarize(prop_correct =mean(as.numeric(as.character(correct)))) %>% filter(prop_correct > .8)
+
+# Then of those who were not poor performers, calculate the distance change in the final four blocks
+end_perf_dist <- standardized_oddball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(pair != "irr", as.numeric(as.character(block)) > 36) %>% group_by(subject_id, pair,assigned_Condition, rel_dim) %>% summarize(av_dist = mean(dist_change))
+
+# Then calculate the summary statistics of prop correct for each of the pair type and experimental/control conditions
+end_perf_sum_dist <- end_perf_dist %>% group_by(pair, assigned_Condition, rel_dim) %>% summarise(av_dist_change = mean(av_dist), n = n(), sd=sd(av_dist), SE=sd/sqrt(n))
+
+# Plot this
+end_perf_sum_dist %>% ggplot((aes(x=pair, y=av_dist_change, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_dist_change-SE, ymax=av_dist_change+SE), width=.1) + facet_grid(~rel_dim)
+```
+
+```{r}
+end_perf_rel_irr_dim_dist <- standardized_oddball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(as.numeric(as.character(block)) > 36) %>% group_by(subject_id, is_rel,assigned_Condition, rel_dim) %>% summarize(av_dist = mean(dist_change))
+
+end_perf_rel_irr_sum_dim_dist <- end_perf_rel_irr_dim_dist %>% group_by(is_rel, assigned_Condition, rel_dim) %>% summarise(av_dist_change = mean(av_dist), n = n(), sd=sd(av_dist), SE=sd/sqrt(n))
+
+end_perf_rel_irr_sum_dim_dist %>% ggplot((aes(x=is_rel, y=av_dist_change, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_dist_change-SE, ymax=av_dist_change+SE), width=.1) + 
+  scale_x_discrete(labels = c("Irrelevant", "Relevant")) + facet_grid(~rel_dim)
+```
+
+Regular anova with distance change
+RM Anova for Between vs Within and Relevant vs Irrelevant
+```{r}
+bet_with_anova_dist <- ezANOVA(data=end_perf_dist, wid=subject_id, dv=av_dist, within = pair, between = assigned_Condition)
+bet_with_anova_dist
+
+rel_irr_anova_dist <- ezANOVA(data=end_perf_rel_irr_dim_dist, wid=subject_id, dv=av_dist, within = is_rel, between = assigned_Condition)
+rel_irr_anova_dist
+```
+
+```{r}
+stand_oddball_block_level <- standardized_oddball %>% group_by(subject_id, block) %>% summarise(block_oddball = mean(dist_change))
+
+stand_oddball_dist_sum <- merge(standardized_oddball, stand_oddball_block_level, by=c("subject_id", "block")) %>% mutate(stand_dist_change = dist_change - block_oddball)
+stand_oddball_dist_sum <- stand_oddball_dist_sum %>% group_by(subject_id, pair, assigned_Condition) %>% summarise(av_stand_oddball = mean(stand_dist_change)) 
+
+all_perf_oddball_dist_stand <- merge(stand_oddball_dist_sum, rbind(number_learn_summary, category_learn_summary), by="subject_id")
+```
+
+```{r}
+all_perf_oddball_dist_stand %>% 
+  ggplot((aes(x=pred, y=av_stand_oddball, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Est. of Oddball Perf by Standardized Average Dist Change for Correct Trials") 
+
+#pdf("CatandNumvsOddBallUsingStandDistanceFacetByAssignedCondition.pdf", width=10, height=6)
+stand_dist_control_exp <- all_perf_oddball_dist_stand %>% ggplot((aes(x=pred, y=av_stand_oddball, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Est. of Oddball Perf by Standardized Average Dist Change for Correct Trials")
+#print(stand_control_exp)
+#dev.off()
+stand_dist_control_exp
+```
+

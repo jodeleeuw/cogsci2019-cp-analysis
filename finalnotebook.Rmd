@@ -1,0 +1,595 @@
+---
+title: "Cleaned and Annotated"
+output:
+  html_document: default
+---
+
+These libraries are used to create the following datasets + conduct all the analyses in this notebook.
+```{r warning=FALSE}
+library(broom)
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ez)
+```
+
+Starting data
+```{r}
+# Load data
+subject_demographic_data <- read.csv("dataOct20_2018.csv")
+subject_data <- read.csv("fall18_oddballCP.csv") 
+
+#This person was missing some of the trials
+subject_data <- subject_data %>% filter(subject_id != "5b7a902e16aa440001697f84")
+```
+
+Different phases of the experiment
+```{r}
+# Select different phases of the experiment and make sure that labels indicating pair type of relevant/irrelevant are there
+# In addition, add trial numbers for each of the participants for each phase
+phase1 <- subject_data %>% filter(test_part == "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+test <- subject_data %>% filter(test_part != "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+odd_ball <- subject_data %>% filter(test_part == "ob_test") %>% mutate(pair = case_when(
+  pair_type == "be" ~ "be",
+  pair_type == "wi1" ~ "wi",
+  pair_type == "wi2" ~ "wi",
+  pair_type == "irr1" ~ "irr",
+  pair_type == "irr2" ~ "irr",
+  pair_type == "irr3" ~ "irr"
+)) %>% mutate(is_rel = ifelse(pair=="irr", FALSE, TRUE))  %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+
+# Select the portion of the experiment dedicated to the number judgement task
+number_judge <- subject_data %>% filter(test_part == "nj_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+
+# Select the portion of the experiment dedicated to the category judgement task
+category_judge <- subject_data %>% filter(test_part == "ct_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+```
+
+Make sure that all numeric columns have right type
+```{r}
+# Columns need to be casted as character and then numeric because all the columns seem to initially be stored as some sort of string. After being bound as characters and then numbers, all the columns can be worked with normally.
+
+number_judge$block = as.numeric(as.character(number_judge$block))
+category_judge$block = as.numeric(as.character(category_judge$block))
+odd_ball$block = as.numeric(as.character(odd_ball$block))
+
+number_judge$correct = as.numeric(as.character(number_judge$correct))
+category_judge$correct = as.numeric(as.character(category_judge$correct))
+odd_ball$correct = as.numeric(as.character(odd_ball$correct))
+
+phase1$distance = as.numeric(as.character(phase1$distance))
+odd_ball$distance = as.numeric(as.character(odd_ball$distance))
+```
+
+Standardized Oddball
+```{r}
+# Add measure for oddball that just shows how many jumps.
+standardized_oddball <- odd_ball %>%
+  group_by(subject_id, pair_type, pair) %>%
+  mutate(top = distance == .33) %>%
+  # next change represents whether the next oddball task will become harder or easier.
+  # when correct, distance becomes smaller and when not, gets bigger
+  mutate(next_change = if_else(correct == 1, -1, 1)) %>% 
+  # when already at the top, then can't get bigger
+  mutate(next_change = if_else(next_change == 1 & top, 0, next_change)) %>% 
+  # dist change is the overall distance change from start to finish
+  mutate(dist_change = cumsum(next_change))
+```
+
+Graphical representation of the performance throughout phase 1 (trying to establish baseline performance).
+```{r}
+# Average performance across all individuals at each trial
+averaged_distance_trial <- phase1 %>% group_by(trial_number, rel_dim) %>% summarise(distance = mean(distance)) %>% mutate(subject_id="average")
+
+# Graph depicting individual (blue) and average distance changes across trials duing phase 1
+phase1 %>% ggplot(aes(x=trial_number, y=distance, group=subject_id)) + 
+  geom_line(color="steelblue") + 
+  facet_grid(rel_dim ~ .) + scale_y_continuous(name="Distance") +
+  xlab("Trial Number") + geom_line(data=averaged_distance_trial)
+```
+
+Here we evaluate the performance in phase 2 across the different pair types and the different experimental conditions, at the trial level.
+```{r}
+# Standardized distance change for each pair type and experimental condition combination, by trial
+stand_averaged_distance_oddball <- standardized_oddball %>% group_by(trial_number, pair_type, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% 
+  # Give these averages different subject ids indicating that they are averages from graphing
+  mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+# Graph depicting standardized distance change across trials for each participant during phase 2. Each pair type is looked at individually
+standardized_oddball %>% group_by(subject_id, pair_type, assigned_Condition) %>% ggplot(aes(x=trial_number, y=dist_change, group=subject_id, color=assigned_Condition)) + 
+  geom_line(color="steelblue") + facet_grid(pair_type ~ .) + 
+  geom_line(data=stand_averaged_distance_oddball)
+```
+
+The same type of graph as the above one, just collasped over individual pair types (such as wi1 vs wi2, now just wi)
+```{r}
+# Standardized distance change in steps, collasped over pair type, by trial
+stand_averaged_distance_pair_oddball <- standardized_oddball %>% group_by(trial_number, pair, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+# Graph depicting standardized distance change across trials for each participant during phase 2
+standardized_oddball %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=trial_number, y=dist_change, group=subject_id, color=assigned_Condition)) + 
+  geom_line(color="steelblue") + facet_grid(pair ~ .) + 
+  geom_line(data=stand_averaged_distance_pair_oddball)
+```
+
+Now the two above graphs are produced at the block rather than trial level. Here, looking at standarized distance change across time at the block level.
+```{r}
+#Standardized distance in steps, by block
+stand_averaged_distance_oddball <- standardized_oddball %>% group_by(block, pair_type, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_dist <- standardized_oddball %>% group_by(subject_id, assigned_Condition, pair_type, block) %>% summarize(dist_change = mean(dist_change)) 
+
+# Graph depicting average standardized distance change across block for each participant during phase 2
+block_stand_dist %>% group_by(subject_id, pair_type, assigned_Condition) %>% ggplot(aes(x=block, y=dist_change, group=subject_id, color=assigned_Condition)) +
+  geom_line(color="steelblue") + facet_grid(pair_type ~ .) + 
+  geom_line(data=stand_averaged_distance_oddball)
+```
+
+The same graph as above, just collasped over the different pair types within each pair type.
+```{r}
+#Standardized distance in steps, by block collasped over pair type
+stand_averaged_distance_pair_oddball <- standardized_oddball %>% group_by(block, pair, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_pair_dist <- standardized_oddball %>% group_by(subject_id, assigned_Condition, pair, block) %>% summarize(dist_change = mean(dist_change)) 
+
+# Do this graph but not broken up by pair
+block_stand_pair_dist %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=block, y=dist_change, group=subject_id, color=assigned_Condition)) +
+  geom_line(color="steelblue") + facet_grid(. ~ pair) + 
+  geom_line(data=stand_averaged_distance_pair_oddball)
+```
+
+
+Just to explore, remove some of the worst participants (look at performance in final quarter)
+```{r}
+# Filter out participants who performed worse than 50% over the last 10 blocks
+poor_number_judge <- number_judge %>% filter(block > 30) %>% group_by(subject_id) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .50) %>% select(subject_id)
+
+poor_category_judge <- category_judge %>% filter(block > 30) %>% group_by(subject_id) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .50) %>% select(subject_id)
+
+poor_oddball <- standardized_oddball %>% filter(block > 30) %>% group_by(subject_id) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .50) %>% select(subject_id)
+
+# Just to gt a sense of what bad performance in the oddball looks like
+poor_oddball_overall_blocks <- standardized_oddball %>% filter(subject_id %in% poor_oddball$subject_id) %>% group_by(subject_id, block) %>% summarize(prop_correct = mean(as.numeric(as.character(correct))))
+```
+
+Graph the oddball task again this time without worst guys, again at the block level. First preserve the different pair types within each pair type.
+```{r}
+stand_averaged_distance_oddball <-  standardized_oddball %>% filter(!(subject_id %in% poor_number_judge) && !(subject_id %in% poor_category_judge)) %>% group_by(block, pair_type, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_dist <- standardized_oddball %>% filter(!(subject_id %in% poor_number_judge$subject_id) && !(subject_id %in% poor_category_judge$subject_id)) %>% group_by(subject_id, assigned_Condition, pair_type, block) %>% summarize(dist_change = mean(dist_change)) 
+
+#pdf("DistanceChangeByBlockSepPairs.pdf")
+distanceChangePairsSep <- block_stand_dist %>% group_by(subject_id, pair_type, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id, color=assigned_Condition)) +
+  scale_colour_manual(name="Legend", values=c("blue","darkorchid4","turquoise1", "pink1")) +
+  geom_line() + facet_grid(. ~ pair_type) + 
+  geom_line(data=stand_averaged_distance_oddball, aes(color=subject_id))
+#print(distanceChangePairsSep)
+#dev.off()
+distanceChangePairsSep
+```
+
+Now collaspe over the different pair types within each pair type (wi2 and wi1 now just wi). 
+```{r}
+# Graph the pair types again without worst guys
+stand_averaged_distance_pair_oddball <-  standardized_oddball %>% filter(!(subject_id %in% poor_number_judge) && !(subject_id %in% poor_category_judge)) %>% group_by(block, pair, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_pair_dist <- standardized_oddball %>% filter(!(subject_id %in% poor_number_judge$subject_id) && !(subject_id %in% poor_category_judge$subject_id)) %>% group_by(subject_id, assigned_Condition, pair, block) %>% summarize(dist_change = mean(dist_change)) 
+
+#pdf("DistanceChangeByBlock.pdf")
+distanceChangeBlock <- block_stand_pair_dist %>% group_by(subject_id, pair, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id)) +
+  scale_colour_manual(name="Legend", values=c("blue","darkorchid4","turquoise1", "pink1")) +
+  geom_line(aes(color=assigned_Condition)) + facet_grid(. ~ pair) + 
+  geom_line(data=stand_averaged_distance_pair_oddball, aes(color=subject_id)) + xlab("Block") + ylab("Standardized Distance Change")
+#print(distanceChangeBlock)
+#dev.off()
+distanceChangeBlock
+```
+
+Now we will produce the same sort of graph presented above, but this time for relevant vs irrelevant dimension.
+```{r}
+# Same as earlier but this time concerning relevant and irrelevant rather than pair, again without worst guys
+stand_averaged_distance_rel_oddball <-  standardized_oddball %>% filter(!(subject_id %in% poor_number_judge) && !(subject_id %in% poor_category_judge)) %>% group_by(block, is_rel, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+block_stand_rel_dist <- standardized_oddball %>% filter(!(subject_id %in% poor_number_judge$subject_id) && !(subject_id %in% poor_category_judge$subject_id)) %>% group_by(subject_id, assigned_Condition, is_rel, block) %>% summarize(dist_change = mean(dist_change)) 
+
+#pdf("DistanceChangeByBlockRel.pdf")
+distanceChangeBlockRel <- block_stand_rel_dist %>% group_by(subject_id, is_rel, assigned_Condition) %>% ggplot(aes(x=as.numeric(as.character(block)), y=dist_change, group=subject_id)) +
+  scale_colour_manual(name="Legend", values=c("blue","darkorchid4","turquoise1", "pink1")) +
+  geom_line(aes(color=assigned_Condition)) + facet_grid(. ~ is_rel) + 
+  geom_line(data=stand_averaged_distance_rel_oddball, aes(color=subject_id)) + xlab("Block") + ylab("Standardized Distance Change")
+#print(distanceChangeBlock)
+#dev.off()
+distanceChangeBlockRel
+```
+
+This section of code is used to predict the end performance level for participants in either the category learning or number judgement tasks.
+```{r}
+# First, two helper functions
+
+# This fits a binomial model using trial number as a predictor for correct
+subject.model <- function(df){
+  return(glm(correct ~ trial_number, data=df, family=binomial))
+}
+
+# This adds the predicted outcomes resulting from the model to the provided dataframe
+add.predictions.glm <- function(df){
+  return(augment(df, type.predict = "response"))
+}
+
+# Create a summary of category learning
+category_learn_summary <- category_judge %>%
+  # Need a summary for each individual
+  group_by(subject_id) %>%
+  nest() %>%
+  # For each subject, fit the binomial model
+  mutate(model = map(data, subject.model)) %>%
+  # Extract the predictions from the model and save these
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  # Unnest so that each cell is expanded
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  # Take the final predicted value. This tells us how likely it is for someone to get the final
+  # trial correct, which gives a sense of their overall performance
+  filter(trial_number == 240) %>%
+  # Keep only the necessary columns (subject, actual correctness, their predicted value)
+  select(subject_id, correct, pred)
+
+# Repeat the above process for number judgement
+number_learn_summary <- number_judge %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+  
+# To get the oddball performance summary, simply get the final distance change for each pair type.
+oddball_perf_summary <- standardized_oddball %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id, assigned_Condition, pair, rel_dim) %>% summarise(dist_change = mean(dist_change)) %>% select(subject_id, dist_change, assigned_Condition, pair, rel_dim)
+
+# Create dataframe that has oddball and category performance for each individual in the experimental condition
+cat_odd_performance_comp <- merge(category_learn_summary, oddball_perf_summary %>% filter(assigned_Condition == "experimental"), by="subject_id")
+
+# Create dataframe that has oddball and number performance for each individual in the control condition
+num_odd_performance_comp <- merge(number_learn_summary, oddball_perf_summary %>% filter(assigned_Condition == "control"), by="subject_id")
+```
+
+Graph showing the relationship between category learning (calculated above) and oddball performance (distance change) for individuals in experimental group.
+```{r}
+#pdf("CatvsOddBall.pdf")
+catvsoddball <- cat_odd_performance_comp %>% ggplot((aes(x=pred, y=dist_change, group=pair, color=pair))) + 
+  geom_point() + 
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Category Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") +
+  ggtitle("Oddball Task vs Category Learning")
+#print(catvsoddball)
+#dev.off()
+catvsoddball
+```
+
+Graph showing the relationship between number judgement learning and oddball performance for individuals in control group.
+```{r}
+#pdf("CatvsOddBall.pdf")
+numvsoddball <- num_odd_performance_comp %>% ggplot((aes(x=pred, y=dist_change, group=pair, color=pair))) + 
+  geom_point() + 
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Number Judgement Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") +
+  ggtitle("Oddball Task vs Number Judgement Learning")
+#print(catvsoddball)
+#dev.off()
+numvsoddball
+```
+
+
+Combine the experimental and control groups to create one dataframe that contains information about performance on the individual task (either category or number judgement) and information about oddball performance.
+```{r}
+all_perf_oddball <- rbind(cat_odd_performance_comp, num_odd_performance_comp)
+```
+
+Graph depicting the relationship between number judgement / category learning and oddball performance using distance change as the metric for oddball performance and the probability of getting a correct answer on the final trial as a metric for the n/c performance.
+```{r}
+#pdf("CatandNumvsOddBall.pdf", width=10, height=6)
+all_vs_oddball <- all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+#print(all_vs_oddball)
+#dev.off()
+all_vs_oddball
+```
+
+The same above graph, but broken up dimension type.
+```{r}
+#pdf("CatandNumvsOddBallBrokenByDimension.pdf", width=10, height=6)
+all_vs_oddball_by_dim <- all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(rel_dim~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+#print(all_vs_oddball_by_dim)
+#dev.off()
+all_vs_oddball_by_dim
+```
+
+Here we are creating the same datasets and the same graph we did comparing category/number judgment performance to oddball task performance, but this time, using only the final blocks instead of the whole thing. The idea here was that using all the trials rather than a subset at the end may mean that we are letting performance early on in the experiment affect the end learning level estimate when we should discount it because participants have not yet grasped the basic task or make many silly mistakes.
+```{r}
+category_learn_summary_end <- category_judge %>% filter(block >= 30) %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+
+number_learn_summary_end <- number_judge  %>% 
+  filter(block >= 30) %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+
+cat_odd_performance_comp_end <- merge(category_learn_summary_end, oddball_perf_summary %>% filter(assigned_Condition == "experimental"), by="subject_id")
+
+num_odd_performance_comp_end <- merge(number_learn_summary_end, oddball_perf_summary %>% filter(assigned_Condition == "control"), by="subject_id")
+
+all_perf_oddball_end <- rbind(cat_odd_performance_comp_end, num_odd_performance_comp_end)
+
+all_perf_oddball_end %>% ggplot((aes(x=pred, y=dist_change, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(rel_dim~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+```
+
+Here we create a graph that might be typically created for a learned CP experiment. This first one compares the performance on the between and within pairs for the last four blocks (as if it was a test section)
+```{r}
+# Remove poor performers (less than 80% correct out of last 7 blocks)
+part_poor_perfs <- category_judge %>% filter(block > 33) %>% group_by(subject_id) %>% summarize(prop_correct =mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .8)
+
+# Then of those who were not poor performers, calculate the proportion correct in the final four blocks
+end_perf <- odd_ball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(pair != "irr", block > 36) %>% group_by(subject_id, pair, assigned_Condition) %>% summarize(prop_correct =mean(correct))
+
+# Then calculate the summary statistics of prop correct for each of the pair type and experimental/control conditions
+end_perf_sum <- end_perf %>% group_by(pair, assigned_Condition) %>% summarise(average_correct = mean(prop_correct), n = n(), sd=sd(prop_correct), SE=sd/sqrt(n))
+
+# Plot this
+end_perf_sum %>% ggplot((aes(x=pair, y=average_correct, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=average_correct-SE, ymax=average_correct+SE), width=.1)
+```
+
+Next, we will do the same for relevant vs irrelevant pairs.
+```{r}
+end_perf_rel_irr <- odd_ball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(as.numeric(as.character(block)) > 36) %>% group_by(subject_id, is_rel, assigned_Condition) %>% summarize(prop_correct =mean(as.numeric(as.character(correct))))
+
+end_perf_rel_irr_sum <- end_perf_rel_irr %>% group_by(is_rel, assigned_Condition) %>% summarise(average_correct = mean(prop_correct), n = n(), sd=sd(prop_correct), SE=sd/sqrt(n))
+
+end_perf_rel_irr_sum %>% ggplot((aes(x=is_rel, y=average_correct, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=average_correct-SE, ymax=average_correct+SE), width=.1) + 
+  scale_x_discrete(labels = c("Irrelevant", "Relevant"))
+```
+
+Now we can do a repeated measures ANOVA that allows us to analytically evaluate the two above graphs.
+```{r}
+# Repeated measures anova, within subject variable is pair, checking to see if prop correct differs between assigned condition and pair type combos
+bet_with_anova <- ezANOVA(data=end_perf, wid=subject_id, dv=prop_correct, within = pair, between = assigned_Condition)
+bet_with_anova
+
+# Repeated measures anova, within subject variable is relevance of dimension, checking to see if prop correct differs between assigned condition and relevance of dimension type combos
+rel_irr_anova <- ezANOVA(data=end_perf_rel_irr, wid=subject_id, dv=prop_correct, within = is_rel, between = assigned_Condition)
+rel_irr_anova
+```
+
+Now let us look and see if the graphical patterns in the overall pattern between correctness and assigned condition + pair/dimension relevance remains the same for the two individual dimensions, dots and lines.
+```{r}
+# Create the proportion correct summaries for each individual over the last 4 blocks again, this time keeping their relevant dimension data for between and within
+end_perf_dim <- odd_ball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(pair != "irr", block > 36) %>% group_by(subject_id, pair, assigned_Condition, rel_dim) %>% summarize(prop_correct =mean(correct))
+
+# Get overall means for assigned condition and relevant dimension combos
+end_perf_sum_dim <- end_perf_dim %>% group_by(pair, assigned_Condition, rel_dim) %>% summarise(average_correct = mean(prop_correct), n = n(), sd=sd(prop_correct), SE=sd/sqrt(n))
+
+# Graph
+end_perf_sum_dim %>% ggplot((aes(x=pair, y=average_correct, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=average_correct-SE, ymax=average_correct+SE), width=.1) + facet_grid(.~rel_dim)
+```
+
+
+```{r}
+# Repeat the above process for irrelevant vs relevant dimension
+end_perf_rel_irr_dim <- odd_ball %>% filter(!(subject_id %in% part_poor_perfs$subject_id)) %>% filter(block > 36) %>% group_by(subject_id, is_rel, assigned_Condition, rel_dim) %>% summarize(prop_correct =mean(correct))
+
+end_perf_rel_irr_sum_dim <- end_perf_rel_irr_dim %>% group_by(is_rel, assigned_Condition, rel_dim) %>% summarise(average_correct = mean(prop_correct), n = n(), sd=sd(prop_correct), SE=sd/sqrt(n))
+
+end_perf_rel_irr_sum_dim %>% ggplot((aes(x=is_rel, y=average_correct, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=average_correct-SE, ymax=average_correct+SE), width=.1) + 
+  scale_x_discrete(labels = c("Irrelevant", "Relevant")) + facet_grid(.~rel_dim)
+```
+
+The above pattern seems to show that there may not be equal difficulty in working with the two different dimensions. We wanted to explore whether performance on the category/number judgement task differed between the two dimension types.
+```{r}
+# Oddball performance summary table
+mean_ind_learning <- all_perf_oddball %>% group_by(assigned_Condition, rel_dim) %>% summarize(mean=mean(pred))
+mean_ind_learning
+
+# Graph showing histogram of final learning for each relevant dimension and control/experimental type
+
+#pdf("HistogramIndLearningByDim.pdf", width=10, height=6)
+histogram_ind_learning <- all_perf_oddball %>% ggplot(aes(x=pred)) + geom_histogram(binwidth = .1) + facet_grid(.~assigned_Condition+rel_dim) + xlab("Estimate of Individual Learning by Final Trial") + geom_vline(aes(xintercept=mean), data=mean_ind_learning, color="red")
+#print(histogram_ind_learning)
+#dev.off()
+histogram_ind_learning 
+```
+
+Repeat the above process using distance change rather than accuracy as the dependent variable. This time from the start we will just separate by dimension to begin with.
+```{r}
+# First, with within vs between
+
+# Of those who were not poor performers, calculate the distance change in the final four blocks. This will give us an idea of around what level of difficulty they were honing in on.
+end_perf_dist <- standardized_oddball %>% filter(pair != "irr", as.numeric(as.character(block)) > 36) %>% group_by(subject_id, pair,assigned_Condition, rel_dim) %>% summarize(av_dist = mean(dist_change))
+
+# Then calculate the summary statistics of prop correct for each of the pair type and experimental/control conditions
+end_perf_sum_dist <- end_perf_dist %>% group_by(pair, assigned_Condition, rel_dim) %>% summarise(av_dist_change = mean(av_dist), n = n(), sd=sd(av_dist), SE=sd/sqrt(n))
+
+# Plot this
+end_perf_sum_dist %>% ggplot((aes(x=pair, y=av_dist_change, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_dist_change-SE, ymax=av_dist_change+SE), width=.1) + facet_grid(~rel_dim)
+```
+
+```{r}
+# Next, with irrelevant vs relevant
+
+end_perf_rel_irr_dim_dist <- standardized_oddball %>% filter(as.numeric(as.character(block)) > 36) %>% group_by(subject_id, is_rel,assigned_Condition) %>% summarize(av_dist = mean(dist_change))
+
+end_perf_rel_irr_sum_dim_dist <- end_perf_rel_irr_dim_dist %>% group_by(is_rel, assigned_Condition) %>% summarise(av_dist_change = mean(av_dist), n = n(), sd=sd(av_dist), SE=sd/sqrt(n))
+
+end_perf_rel_irr_sum_dim_dist %>% ggplot((aes(x=is_rel, y=av_dist_change, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_dist_change-SE, ymax=av_dist_change+SE), width=.1) + 
+  scale_x_discrete(labels = c("Irrelevant", "Relevant"))
+```
+
+Now we will do the same RM Anova for Between vs Within and Relevant vs Irrelevant, this time using distance change as the dependent variable.
+```{r}
+bet_with_anova_dist <- ezANOVA(data=end_perf_dist, wid=subject_id, dv=av_dist, within = pair, between = assigned_Condition)
+bet_with_anova_dist
+
+rel_irr_anova_dist <- ezANOVA(data=end_perf_rel_irr_dim_dist, wid=subject_id, dv=av_dist, within = is_rel, between = assigned_Condition)
+rel_irr_anova_dist
+```
+
+Now we will look at the relationship between response time for correct responses during the oddball task and the performance during the individual task.
+```{r}
+# First need to create an oddball performance summary based on response time for correct trials. Only keep correct trials, group by subject and pair type + assigned condition, take average response time
+oddball_perf_summary3 <- standardized_oddball %>% filter(correct == 1) %>% group_by(subject_id, pair, assigned_Condition) %>% summarise(av_response_time = mean(as.numeric(as.character(rt))))
+
+# Take our new summary and combine with it the summaries for the individual learning performance.
+all_perf_oddball3 <- merge(oddball_perf_summary3, rbind(category_learn_summary,number_learn_summary), by="subject_id")
+```
+
+Now graph correct RT against performance during the individual task, both facted by pair and also by assigned condition.
+```{r}
+# Faceted by pair
+#pdf("CatandNumvsOddBallUsingRT.pdf", width=10, height=6)
+all_vs_oddball3 <-all_perf_oddball3 %>% ggplot((aes(x=pred, y=av_response_time, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Perf by Average RT for Correct Trials") 
+#print(all_vs_oddball3)
+#dev.off()
+all_vs_oddball3
+
+# Faceted by assigned condition
+#pdf("CatandNumvsOddBallUsingRTFacetByAssignedCondition.pdf", width=10, height=6)
+control_exp <- all_perf_oddball3 %>% ggplot((aes(x=pred, y=av_response_time, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Perf by Average RT for Correct Trials") 
+#print(control_exp)
+#dev.off()
+control_exp
+```
+
+Try this same above strategy, but this time standardize response time for each participant.
+```{r}
+# Calculate each participant's average response time
+oddball_perf_overall_sum <- standardized_oddball %>% filter(correct == 1) %>% group_by(subject_id) %>% summarise(overall_av_rt = mean(as.numeric(as.character(rt))))
+
+# Combine the above summary with the standarized oddball dataset, just filtering out correct trials again.
+oddball_perf_summary3 <- merge(standardized_oddball %>% filter(correct == 1) , oddball_perf_overall_sum, by="subject_id")
+# Now that we have sucessfully combined standarized_oddball with the summary, we can take the difference between each trial and the overall average rt for each participant
+oddball_perf_summary3 <- oddball_perf_summary3 %>% mutate(stand_rt = as.numeric(as.character(rt)) - overall_av_rt)
+# Take the average rt for each participant for each pair type individually (assigned_Condition needed so that preserved as column)
+oddball_perf_summary3 <- oddball_perf_summary3 %>% group_by(subject_id, pair, assigned_Condition) %>% summarise(av_response_time = mean(stand_rt))
+# Combine with individual performance data
+all_perf_oddball3_stand <- merge(oddball_perf_summary3, rbind(number_learn_summary, category_learn_summary), by="subject_id")
+```
+
+Graph new standardized response times
+```{r}
+all_perf_oddball3_stand %>% ggplot((aes(x=pred, y=av_response_time, group=assigned_Condition, color=assigned_Condition))) + 
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Est. of Oddball Perf by Standardized Average RT for Correct Trials") 
+
+#pdf("CatandNumvsOddBallUsingStandRTFacetByAssignedCondition.pdf", width=10, height=6)
+stand_control_exp <- all_perf_oddball3_stand %>% ggplot((aes(x=pred, y=av_response_time, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Est. of Oddball Perf by Standardized Average RT for Correct Trials")
+#print(stand_control_exp)
+#dev.off()
+stand_control_exp
+```
+
+Now we will apply the same standardization idea we used above to distance change. Hopefully this will allow us to account for some individual variation in distance change across participants.
+```{r}
+# Get the average oddball endpoint across the pairtypes
+stand_oddball_subj <- standardized_oddball %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id) %>% summarise(end_oddball_av = mean(dist_change))
+
+# Combine this summary table with the a dataframe of the final pairtype values, and then subtract the average distance change for each person with the corresponding final distance for each pair type
+stand_oddball_dist_sum <- standardized_oddball %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>%  merge(stand_oddball_subj, by=c("subject_id")) %>% mutate(stand_dist_change = dist_change - end_oddball_av) %>% group_by(subject_id, assigned_Condition, pair, is_rel) %>% summarise(av_stand_oddball=mean(stand_dist_change))
+
+# Combine with performance on individual task
+all_perf_oddball_dist_stand <- merge(stand_oddball_dist_sum, rbind(number_learn_summary, category_learn_summary), by="subject_id")
+```
+
+Graph standarized distance change by performance on the individual task (above data).
+```{r}
+# faceted by pair type
+all_perf_oddball_dist_stand %>% 
+  ggplot((aes(x=pred, y=av_stand_oddball, group=assigned_Condition, color=assigned_Condition))) +
+  geom_point() + 
+  facet_grid(.~pair) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Est. of Oddball Perf by Standardized Average Dist Change for Correct Trials") 
+
+
+# faceted by assigned condition
+#pdf("CatandNumvsOddBallUsingStandDistanceFacetByAssignedCondition.pdf", width=10, height=6)
+stand_dist_control_exp <- all_perf_oddball_dist_stand %>% ggplot((aes(x=pred, y=av_stand_oddball, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Est. of Oddball Perf by Standardized Average Dist Change for Correct Trials")
+#print(stand_control_exp)
+#dev.off()
+stand_dist_control_exp
+```
+
+Figure 14
+```{r}
+all_perf_oddball <- rbind(cat_odd_performance_comp, num_odd_performance_comp)
+
+#pdf("CatandNumvsOddBall.pdf", width=10, height=6)
+all_vs_oddball <- all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=pair, color=pair))) + 
+  geom_point() + 
+  facet_grid(.~assigned_Condition) +
+  geom_smooth(method="lm", se=F) + 
+  xlab("Estimate of Individual Learning by Final Trial") +
+  ylab("Estimate of Oddball Task Performance") 
+#print(all_vs_oddball)
+#dev.off()
+all_vs_oddball
+```

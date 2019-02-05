@@ -1,0 +1,467 @@
+---
+title: "Notebook of relevant files for the write up"
+output:
+  html_document: default
+---
+
+These libraries are used to create the following datasets + conduct all the analyses in this notebook.
+```{r warning=FALSE}
+library(broom)
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ez)
+library(readr)
+```
+
+Starting data
+```{r}
+# Load data
+subject_demographic_data <- read.csv("dataOct20_2018.csv")
+subject_data <- read_csv("fall18_oddballCP.csv") 
+
+#This person was missing some of the trials
+subject_data <- subject_data %>% filter(subject_id != "5b7a902e16aa440001697f84")
+```
+
+Different phases of the experiment
+```{r}
+# Select different phases of the experiment and make sure that labels indicating pair type of relevant/irrelevant are there
+# In addition, add trial numbers for each of the participants for each phase
+phase1 <- subject_data %>% filter(test_part == "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+test <- subject_data %>% filter(test_part != "phase_one") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+odd_ball <- subject_data %>% filter(test_part == "ob_test") %>% mutate(pair = case_when(
+  pair_type == "be" ~ "be",
+  pair_type == "wi1" ~ "wi",
+  pair_type == "wi2" ~ "wi",
+  pair_type == "irr1" ~ "irr",
+  pair_type == "irr2" ~ "irr",
+  pair_type == "irr3" ~ "irr"
+)) %>% mutate(is_rel = ifelse(pair=="irr", FALSE, TRUE))  %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+
+# Select the portion of the experiment dedicated to the number judgement task
+number_judge <- subject_data %>% filter(test_part == "nj_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+
+# Select the portion of the experiment dedicated to the category judgement task
+category_judge <- subject_data %>% filter(test_part == "ct_test") %>% group_by(subject_id) %>% mutate(trial_number = 1:n())
+```
+
+Make sure that all numeric columns have right type
+```{r}
+# Columns need to be casted as character and then numeric because all the columns seem to initially be stored as some sort of string. After being bound as characters and then numbers, all the columns can be worked with normally.
+
+number_judge$block = as.numeric(as.character(number_judge$block))
+category_judge$block = as.numeric(as.character(category_judge$block))
+odd_ball$block = as.numeric(as.character(odd_ball$block))
+
+number_judge$correct = as.numeric(as.character(number_judge$correct))
+category_judge$correct = as.numeric(as.character(category_judge$correct))
+odd_ball$correct = as.numeric(as.character(odd_ball$correct))
+
+phase1$distance = as.numeric(as.character(phase1$distance))
+odd_ball$distance = as.numeric(as.character(odd_ball$distance))
+
+odd_ball$subject_id = as.factor(odd_ball$subject_id)
+```
+
+Standardized Oddball
+```{r}
+# Add measure for oddball that just shows how many jumps.
+standardized_oddball <- odd_ball %>%
+  group_by(subject_id, pair_type, pair) %>%
+  mutate(top = distance == .33) %>%
+  # next change represents whether the next oddball task will become harder or easier.
+  # when correct, distance becomes smaller and when not, gets bigger
+  mutate(next_change = if_else(correct == 1, -1, 1)) %>% 
+  # when already at the top, then can't get bigger
+  mutate(next_change = if_else(next_change == 1 & top, 0, next_change)) %>% 
+  # dist change is the overall distance change from start to finish
+  mutate(dist_change = cumsum(next_change))
+```
+
+
+Create visualization of distance change across blocks for all individuals
+```{r}
+#Standardized distance in steps, by block
+stand_averaged_distance_oddball <- standardized_oddball %>% group_by(block, assigned_Condition) %>% summarise(dist_change = mean(dist_change)) %>% mutate(subject_id= ifelse(assigned_Condition=="control", "average_control", "average_exp"),assigned_Condition= ifelse(assigned_Condition=="control", "average_control", "average_exp"))
+
+
+block_stand_dist <- standardized_oddball %>% group_by(subject_id, assigned_Condition, block) %>% summarize(dist_change = mean(dist_change)) 
+
+# Graph depicting average standardized distance change across block for each participant during phase 2
+#pdf("OdballDistanceChangeByBlock")
+graph1 <- rbind(block_stand_dist,stand_averaged_distance_oddball) %>% group_by(subject_id, assigned_Condition) %>% ggplot(aes(x=block, y=dist_change, group=subject_id, color=assigned_Condition)) +
+  geom_line() + 
+  scale_color_manual(values = c("average_control" = "navy", "average_exp" = "green4", "control" = "aquamarine", "experimental" = "olivedrab1"), labels = c("Average of Control Participants", "Average of Experimental Participants", "Control", "Experimental")) +
+   geom_hline(yintercept = 0, color = "black") +
+  xlab("Block (1-40)") +
+  ylab("Average Distance Change") +
+  labs(color='Legend')+ 
+  ggtitle("Distance Change across Blocks")
+#print(graph1)
+#dev.off()
+graph1
+
+oddball_change_block <- standardized_oddball %>% group_by(subject_id, block, is_rel, assigned_Condition) %>% summarize(dist_change = mean(dist_change)) %>%
+  ungroup() %>% mutate(is_rel = ifelse(is_rel, "Relevant", "Irrelevant"))
+learning_over_time_plot <- ggplot(oddball_change_block, aes(x = block, y=dist_change, color=assigned_Condition))+
+  scale_x_continuous(limits=c(1,40), expand=c(0,0))+
+  geom_line(aes(group=subject_id), alpha = 0.3)+
+  geom_hline(yintercept = 0, color="black")+
+  geom_smooth()+
+  facet_wrap(.~is_rel)+
+  scale_color_brewer(palette = "Set1", name=NULL, labels=c("Control", "Experimental"))+
+  labs(x="Block", y="Change in distance (arbitrary units)\n")+
+  theme_bw(base_size = 16)+
+  theme(legend.position = c(0.15, 0.15), legend.background = element_rect(color="black", size = 0.5))
+ggsave("learning_over_time.png", plot = learning_over_time_plot, device="png", path="final_figures/", width=7, height=7)
+learning_over_time_plot
+```
+
+Overall T.test to see if people got perceptual learning
+```{r}
+dots_lines_data <- standardized_oddball %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change))
+(both_t_test <-  t.test(x=dots_lines_data$average_end_dist, mu = 0, alternative = "less"))
+```
+
+T.test to see if people got perceptual learning for lines
+```{r}
+lines_data <- standardized_oddball %>% filter(rel_dim == "lines") %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>%  group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)) 
+(lines_t_test <-  t.test(x=lines_data$average_end_dist, mu = 0, alternative = "less"))
+```
+
+```{r}
+dots_data <- standardized_oddball %>% filter(rel_dim == "dots") %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)) 
+(dots_t_test <-  t.test(x=dots_data$average_end_dist, mu = 0, alternative = "less"))
+```
+
+```{r}
+lines_all_data <- rbind(standardized_oddball %>% filter(rel_dim == "lines") %>% filter(pair == "be" || pair == "wi") %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>%  group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)), standardized_oddball %>% filter(rel_dim == "dots", block > 36) %>% filter(pair == "irr") %>% group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)))
+
+(lines_all_t_test <-  t.test(x=lines_all_data$average_end_dist, mu = 0, alternative = "less"))
+```
+
+
+```{r}
+dots_all_data <- rbind(standardized_oddball %>% filter(rel_dim == "dots", block > 36) %>% filter(pair == "be" || pair == "wi") %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)), standardized_oddball %>% filter(rel_dim == "lines", block > 36) %>% filter(pair == "irr") %>% group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)))
+
+(dots_all_t_test <-  t.test(x=dots_all_data$average_end_dist, mu = 0, alternative = "less"))
+```
+
+T.test to see if people got perceptual learning for lines
+```{r}
+lines_rel_data <- standardized_oddball %>% filter(rel_dim == "lines") %>% filter(pair == "be" || pair == "wi") %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)) 
+(lines_rel_t_test <-  t.test(x=lines_rel_data$average_end_dist, mu = 0, alternative = "less"))
+```
+
+```{r}
+dots_rel_data <- standardized_oddball %>% filter(rel_dim == "dots") %>% filter(pair == "be" || pair == "wi") %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)) 
+(dots_rel_t_test <-  t.test(x=dots_rel_data$average_end_dist, mu = 0, alternative = "less"))
+```
+
+```{r}
+all_rel_data <- standardized_oddball %>% filter(pair == "be" || pair == "wi") %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id) %>% summarise(average_end_dist = mean(dist_change)) 
+(all_rel_t_test <-  t.test(x=all_rel_data$average_end_dist, mu = 0, alternative = "less"))
+```
+
+
+```{r}
+# Filter out participants who performed worse than 80% over the last 7 blocks
+poor_number_judge <- number_judge %>% filter(block > 33) %>% group_by(subject_id, rel_dim) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .8) %>% select(subject_id, rel_dim, prop_correct)
+
+poor_category_judge <- category_judge %>% filter(block > 33) %>% group_by(subject_id, rel_dim) %>% summarize(prop_correct = mean(as.numeric(as.character(correct)))) %>% filter(prop_correct < .8) %>% select(subject_id, rel_dim, prop_correct)
+
+poor_individiual_perf <- rbind(poor_category_judge, poor_number_judge)
+```
+
+
+```{r}
+# First, with within vs between
+
+# Of those who were not poor performers, calculate the distance change in the very last trial. This will give us an idea of around what level of difficulty they were honing in on.
+end_perf_dist <- standardized_oddball %>% filter(!(subject_id %in% poor_individiual_perf$subject_id)) %>% filter(pair != "irr") %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id, rel_dim, pair,assigned_Condition) %>% summarize(final_dist = mean(dist_change))
+
+# Then calculate the summary statistics of prop correct for each of the pair type and experimental/control conditions
+end_perf_sum_dist <- end_perf_dist %>% group_by(pair, assigned_Condition) %>% summarise(av_dist_change = mean(final_dist), n = n(), sd=sd(final_dist), SE=sd/sqrt(n))
+
+# Plot this
+# pdf("DistanceChangeEndBetWithCollaspedDim.pdf")
+end_perf_sum_dist %>% ggplot((aes(x=pair, y=av_dist_change, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_dist_change-SE, ymax=av_dist_change+SE), width=.1) +
+    xlab("Pair Type") +
+    ylab("Distance Change by End of Experiment")
+
+dist_boundary_plot <- ggplot(end_perf_dist, aes(x=pair, y=final_dist, color=assigned_Condition))+
+  geom_line(aes(group=subject_id), alpha = 0.2)+
+  geom_line(data=end_perf_sum_dist, aes(y=av_dist_change, group=assigned_Condition), size=1)+
+  geom_errorbar(data=end_perf_sum_dist, aes(y=av_dist_change, ymax= av_dist_change+SE, ymin=av_dist_change-SE), width=0.1, size=1)+
+  scale_color_brewer(palette = "Set1", name=NULL, labels=c("Control", "Experimental"))+
+  scale_x_discrete(labels=c("Between Category", "Within Category"), expand = c(0.2, 0.2))+
+  labs(x="Comparison Type", y="Total Distance Change")+
+  theme_bw(base_size = 16)+
+  theme(legend.position = c(0.85, 0.85), legend.background = element_rect(color="black", size = 0.5), panel.grid = element_blank())
+ggsave("dist_boundary.png", plot = dist_boundary_plot, device="png", path="final_figures/", width=7, height=4)
+dist_boundary_plot
+```
+
+```{r}
+# Next, with irrelevant vs relevant
+
+end_perf_rel_irr_dim_dist <- standardized_oddball %>% filter(!(subject_id %in% poor_individiual_perf$subject_id)) %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id, rel_dim, is_rel,assigned_Condition) %>% summarize(av_dist = mean(dist_change))
+
+end_perf_rel_irr_sum_dim_dist <- end_perf_rel_irr_dim_dist %>% group_by(is_rel, assigned_Condition) %>% summarise(av_dist_change = mean(av_dist), n = n(), sd=sd(av_dist), SE=sd/sqrt(n))
+
+pdf("DistanceChangeEndRelIrrCollaspedDim.pdf")
+(graph3_both <- end_perf_rel_irr_sum_dim_dist %>% ggplot((aes(x=factor(is_rel, levels = c(T, F)), y=av_dist_change, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_dist_change-SE, ymax=av_dist_change+SE), width=.1) + 
+  scale_x_discrete(labels = c("Relevant", "Irrelevant")) +
+    xlab("Relevance of Dimension") +
+    ylab("Distance Change by End of Experiment"))
+print(graph3_both)
+dev.off()
+
+dist_dimension_plot <- ggplot(end_perf_rel_irr_dim_dist, aes(x=factor(is_rel, levels=c(T,F)), y=av_dist, color=assigned_Condition))+
+  geom_line(aes(group=subject_id), alpha = 0.2)+
+  geom_line(data=end_perf_rel_irr_sum_dim_dist, aes(y=av_dist_change, group=assigned_Condition), size=1)+
+  geom_errorbar(data=end_perf_rel_irr_sum_dim_dist, aes(y=av_dist_change, ymax= av_dist_change+SE, ymin=av_dist_change-SE), width=0.1, size=1)+
+  scale_color_brewer(palette = "Set1", name=NULL, labels=c("Control", "Experimental"))+
+  scale_x_discrete(labels=c("Relevant Dimension", "Irrelevant Dimension"), expand = c(0.2, 0.2))+
+  labs(x="Comparison Type", y="Total Distance Change")+
+  theme_bw(base_size = 16)+
+  theme(legend.position = c(0.85, 0.85), legend.background = element_rect(color="black", size = 0.5), panel.grid = element_blank())
+ggsave("dist_dimension.png", plot = dist_dimension_plot, device="png", path="final_figures/", width=7, height=4)
+dist_dimension_plot
+```
+
+```{r}
+
+# Now including dimension
+
+end_perf_rel_irr_sum_dim_dist_facet_dim <- end_perf_rel_irr_dim_dist %>% group_by(is_rel, rel_dim, assigned_Condition) %>% summarise(av_dist_change = mean(av_dist), n = n(), sd=sd(av_dist), SE=sd/sqrt(n))
+
+pdf("DistanceChangeEndRelIrr.pdf")
+(graph3<- end_perf_rel_irr_sum_dim_dist_facet_dim %>% ggplot((aes(x=factor(is_rel, levels = c(T, F)), y=av_dist_change, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_dist_change-SE, ymax=av_dist_change+SE), width=.1) + 
+  scale_x_discrete(labels = c("Relevant", "Irrelevant")) + facet_grid(.~rel_dim)+
+    xlab("Relevance of Dimension")+
+    ylab("Distance Change by End of Experiment"))
+print(graph3)
+dev.off()
+```
+
+Try same but now include dimension as factor
+
+Response Time
+```{r}
+# First, with within vs between
+
+# Of those who were not poor performers, calculate the response time over the final four blocks for correct answers.
+end_perf_rt <- standardized_oddball %>% filter(!(subject_id %in% poor_individiual_perf$subject_id)) %>% filter(correct == 1) %>% filter(pair != "irr", block > 36) %>% group_by(subject_id, rel_dim, pair,assigned_Condition) %>% summarize(av_rt_ind = mean(as.numeric(as.character(rt))))
+
+# Then calculate the summary statistics of prop correct for each of the pair type and experimental/control conditions
+end_perf_sum_rt <- end_perf_rt %>% group_by(pair, assigned_Condition) %>% summarise(av_rt = mean(av_rt_ind), n = n(), sd=sd(av_rt_ind), SE=sd/sqrt(n))
+
+# Plot this
+#pdf("ResponseTimeEndBetWithCollaspedDim.pdf")
+(graph4_both <- end_perf_sum_rt %>% ggplot((aes(x=pair, y=av_rt, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_rt-SE, ymax=av_rt+SE), width=.1))
+#print(graph4_both)
+#dev.off()
+
+rt_boundary_plot <- ggplot(end_perf_rt, aes(x=pair, y=av_rt_ind, color=assigned_Condition))+
+  geom_line(aes(group=subject_id), alpha = 0.2)+
+  geom_line(data=end_perf_sum_rt, aes(y=av_rt, group=assigned_Condition), size=1)+
+  geom_errorbar(data=end_perf_sum_rt, aes(y=av_rt, ymax= av_rt+SE, ymin=av_rt-SE), width=0.1, size=1)+
+  scale_color_brewer(palette = "Set1", name=NULL, labels=c("Control", "Experimental"))+
+  scale_x_discrete(labels=c("Between Category", "Within Category"), expand = c(0.2, 0.2))+
+  labs(x="Comparison Type", y="Response Time (ms)")+
+  theme_bw(base_size = 16)+
+  theme(legend.position = c(0.85, 0.85), legend.background = element_rect(color="black", size = 0.5), panel.grid = element_blank())
+ggsave("rt_boundary.png", plot = rt_boundary_plot, device="png", path="final_figures/", width=7, height=4)
+rt_boundary_plot
+```
+
+```{r}
+
+# Then calculate the summary statistics of prop correct for each of the pair type and experimental/control conditions, separated by rel_dim
+
+end_perf_sum_rt_facet_by_dim <- end_perf_rt %>% group_by(pair, assigned_Condition, rel_dim) %>% summarise(av_rt = mean(av_rt_ind), n = n(), sd=sd(av_rt_ind), SE=sd/sqrt(n))
+
+# Plot this
+#pdf("ResponseTimeEndBetWith.pdf")
+(graph4 <- end_perf_sum_rt_facet_by_dim %>% ggplot((aes(x=pair, y=av_rt, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_rt-SE, ymax=av_rt+SE), width=.1) + facet_grid(.~rel_dim))
+#print(graph4)
+#dev.off()
+```
+
+```{r}
+# Next, with irrelevant vs relevant
+
+end_perf_rel_irr_dim_rt <- standardized_oddball %>% filter(!(subject_id %in% poor_individiual_perf$subject_id)) %>% filter(correct == 1) %>% filter(block > 36) %>% group_by(subject_id, rel_dim, is_rel,assigned_Condition) %>% summarize(av_rt_ind = mean(as.numeric(as.character(rt))))
+
+end_perf_rel_irr_sum_dim_rt <- end_perf_rel_irr_dim_rt %>% group_by(is_rel, assigned_Condition) %>% summarise(av_rt = mean(av_rt_ind), n = n(), sd=sd(av_rt_ind), SE=sd/sqrt(n))
+
+#pdf("ResponseTimeEndRelIrrCollaspedDim.pdf")
+(graph5_both <- end_perf_rel_irr_sum_dim_rt %>% ggplot((aes(x=is_rel, y=av_rt, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_rt-SE, ymax=av_rt+SE), width=.1) + 
+  scale_x_discrete(labels = c("Irrelevant", "Relevant")))
+#print(graph5_both)
+#dev.off()
+
+rt_dimension_plot <- ggplot(end_perf_rel_irr_dim_rt, aes(x=factor(is_rel, levels=c(T,F)), y=av_rt_ind, color=assigned_Condition))+
+  geom_line(aes(group=subject_id), alpha = 0.2)+
+  geom_line(data=end_perf_rel_irr_sum_dim_rt, aes(y=av_rt, group=assigned_Condition), size=1)+
+  geom_errorbar(data=end_perf_rel_irr_sum_dim_rt, aes(y=av_rt, ymax= av_rt+SE, ymin=av_rt-SE), width=0.1, size=1)+
+  scale_color_brewer(palette = "Set1", name=NULL, labels=c("Control", "Experimental"))+
+  scale_x_discrete(labels=c("Relevant Dimension", "Irrelevant Dimension"), expand = c(0.2, 0.2))+
+  labs(x="Comparison Type", y="Response Time (ms)")+
+  theme_bw(base_size = 16)+
+  theme(legend.position = c(0.85, 0.85), legend.background = element_rect(color="black", size = 0.5), panel.grid = element_blank())
+ggsave("rt_dimension.png", plot = rt_dimension_plot, device="png", path="final_figures/", width=7, height=4)
+rt_dimension_plot
+```
+
+```{r}
+
+# Now including dimension
+
+end_perf_rel_irr_sum_dim_dist_facet_rt <- end_perf_rel_irr_dim_rt %>% group_by(is_rel, rel_dim, assigned_Condition) %>% summarise(av_rt = mean(av_rt_ind), n = n(), sd=sd(av_rt_ind), SE=sd/sqrt(n))
+
+#pdf("ResponseTimeEndRelIrr.pdf")
+(graph5<- end_perf_rel_irr_sum_dim_dist_facet_rt %>% ggplot((aes(x=is_rel, y=av_rt, group=assigned_Condition, color=assigned_Condition))) + geom_line() +
+  geom_errorbar(aes(ymin=av_rt-SE, ymax=av_rt+SE), width=.1) + 
+  scale_x_discrete(labels = c("Irrelevant", "Relevant")) + facet_grid(.~rel_dim))
+#print(graph5)
+#dev.off()
+```
+
+```{r}
+# These two participants got none right in one of the categories in the last 4 blocks
+# 58b20a24c352cc0001ed554b
+# 5af85a3223708c000159b3ce
+# When using 70%: 5b2e7ece975e260001e921b7
+bet_with_anova_rt <- ezANOVA(data=end_perf_rt %>% filter(subject_id != "58b20a24c352cc0001ed554b" && subject_id != "5af85a3223708c000159b3ce"), wid=subject_id, dv=av_rt_ind, within = pair, between = assigned_Condition)
+bet_with_anova_rt
+
+rel_irr_anova_rt <- ezANOVA(data=end_perf_rel_irr_dim_rt, wid=subject_id, dv=av_rt_ind, within = is_rel, between = assigned_Condition)
+rel_irr_anova_rt
+```
+
+```{r}
+# These two participants got none right in one of the categories in the last 4 blocks
+# 58b20a24c352cc0001ed554b
+# 5af85a3223708c000159b3ce
+# When using 70%: 5b2e7ece975e260001e921b7
+end_perf_rt %>% filter(subject_id != "58b20a24c352cc0001ed554b" && subject_id != "5af85a3223708c000159b3ce") %>% filter(rel_dim == "dots") %>% ezANOVA( wid=subject_id, dv=av_rt_ind, within = pair, between = assigned_Condition)
+
+end_perf_rel_irr_dim_rt %>% filter(rel_dim == "dots") %>% ezANOVA(wid=subject_id, dv=av_rt_ind, within = is_rel, between = assigned_Condition)
+
+end_perf_rt %>% filter(subject_id != "58b20a24c352cc0001ed554b" && subject_id != "5af85a3223708c000159b3ce") %>% filter(rel_dim == "lines") %>% ezANOVA( wid=subject_id, dv=av_rt_ind, within = pair, between = assigned_Condition)
+
+end_perf_rel_irr_dim_rt %>% filter(rel_dim == "lines") %>% ezANOVA(wid=subject_id, dv=av_rt_ind, within = is_rel, between = assigned_Condition)
+```
+
+This section of code is used to predict the end performance level for participants in either the category learning or number judgement tasks.
+```{r}
+# First, two helper functions
+
+# This fits a binomial model using trial number as a predictor for correct
+subject.model <- function(df){
+  return(glm(correct ~ trial_number, data=df, family=binomial))
+}
+
+# This adds the predicted outcomes resulting from the model to the provided dataframe
+add.predictions.glm <- function(df){
+  return(augment(df, type.predict = "response"))
+}
+
+# Create a summary of category learning
+category_learn_summary <- category_judge %>%
+  # Need a summary for each individual
+  group_by(subject_id) %>%
+  nest() %>%
+  # For each subject, fit the binomial model
+  mutate(model = map(data, subject.model)) %>%
+  # Extract the predictions from the model and save these
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  # Unnest so that each cell is expanded
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  # Take the final predicted value. This tells us how likely it is for someone to get the final
+  # trial correct, which gives a sense of their overall performance
+  filter(trial_number == 240) %>%
+  # Keep only the necessary columns (subject, actual correctness, their predicted value)
+  select(subject_id, correct, pred)
+
+# Repeat the above process for number judgement
+number_learn_summary <- number_judge %>%
+  group_by(subject_id) %>%
+  nest() %>%
+  mutate(model = map(data, subject.model)) %>%
+  mutate(predictions = map(model, add.predictions.glm)) %>%
+  unnest(predictions) %>%
+  mutate(pred = .fitted) %>%
+  filter(trial_number == 240) %>%
+  select(subject_id, correct, pred)
+  
+# To get the oddball performance summary, simply get the final distance change for each pair type.
+oddball_perf_summary <- standardized_oddball %>% group_by(subject_id, pair_type) %>% filter(trial_number == max(trial_number)) %>% group_by(subject_id, assigned_Condition, pair, rel_dim) %>% summarise(dist_change = mean(dist_change)) %>% select(subject_id, dist_change, assigned_Condition, pair, rel_dim)
+
+# Create dataframe that has oddball and category performance for each individual in the experimental condition
+cat_odd_performance_comp <- merge(category_learn_summary, oddball_perf_summary %>% filter(assigned_Condition == "experimental"), by="subject_id")
+
+# Create dataframe that has oddball and number performance for each individual in the control condition
+num_odd_performance_comp <- merge(number_learn_summary, oddball_perf_summary %>% filter(assigned_Condition == "control"), by="subject_id")
+```
+
+Now we will look at the relationship between response time for correct responses during the oddball task and the performance during the individual task.
+```{r}
+# First need to create an oddball performance summary based on response time for correct trials near the end of the experiment. Only keep correct trials, group by subject and pair type + assigned condition, take average response time
+oddball_perf_summary3 <- standardized_oddball %>% filter(correct == 1) %>% filter(block >36) %>% group_by(subject_id, pair, assigned_Condition) %>% summarise(av_response_time = mean(as.numeric(as.character(rt))))
+
+# Take our new summary and combine with it the summaries for the individual learning performance.
+all_perf_oddball3 <- merge(oddball_perf_summary3, rbind(category_learn_summary,number_learn_summary), by="subject_id")
+```
+
+Now graph correct RT against performance during the individual task, both facted by pair and also by assigned condition.
+```{r}
+# Faceted by assigned condition
+#pdf("CatandNumvsOddBallUsingRTFacetByAssignedCondition.pdf", width=10, height=6)
+control_exp <- all_perf_oddball3 %>% ggplot((aes(x=pred, y=av_response_time, group=pair, color=pair))) + 
+  geom_point(alpha = 0.5) + 
+  facet_grid(.~assigned_Condition, labeller = as_labeller(c(control="Control Group",experimental="Experimental Group"))) +
+  geom_smooth(method="lm", se=F) +
+  scale_color_brewer(palette = "Dark2", name="Comparison Type", labels=c("Between Category", "Irrelevant Dimension", "Within Category"))+
+  xlab("Estimated final probability of a correct categorization / number judgment") +
+  ylab("Mean Correct RT (ms; final four blocks)\n")+
+  theme_bw(base_size = 14)+
+  theme(legend.position = c(0.16, 0.80), legend.background = element_rect(colour="black", size=0.5), legend.title = element_text(size=11), legend.text= element_text(size=10))
+ggsave("rt_perf.png", plot = control_exp, device="png", path="final_figures/", width=7, height=5)
+
+#print(control_exp)
+#dev.off()
+control_exp
+```
+
+Figure 14
+
+```{r}
+all_perf_oddball <- rbind(cat_odd_performance_comp, num_odd_performance_comp)
+
+#pdf("CatandNumvsOddBall.pdf", width=10, height=6)
+all_vs_oddball <- all_perf_oddball %>% ggplot((aes(x=pred, y=dist_change, group=pair, color=pair))) + 
+  geom_point(alpha = 0.5) + 
+  facet_grid(.~assigned_Condition, labeller = as_labeller(c(control="Control Group",experimental="Experimental Group"))) +
+  geom_smooth(method="lm", se=F) +
+  scale_color_brewer(palette = "Dark2", name="Comparison Type", labels=c("Between Category", "Irrelevant Dimension", "Within Category"))+
+  xlab("Estimated final probability of a correct categorization / number judgment") +
+  ylab("Total Distance Change\n")+
+  #ylab("Mean correct RT (ms), last four blocks")+
+  theme_bw(base_size = 14)+
+  theme(legend.position = c(0.16, 0.80), legend.background = element_rect(colour="black", size=0.5), legend.title = element_text(size=11), legend.text= element_text(size=10))
+ggsave("dist_perf.png", plot = all_vs_oddball, device="png", path="final_figures/", width=7, height=5)
+
+all_vs_oddball
+```
